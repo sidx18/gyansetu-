@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.0.1",
-    "@capacitor/cli": "^8.0.1",
+    "@capacitor/cli": "^8.2.0",
     "@capacitor/core": "^8.0.1",
     "@google/genai": "^1.38.0",
     "lucide-react": "^0.563.0",
