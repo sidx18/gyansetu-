@@ -1,0 +1,8 @@
+
+{
+  "name": "GyanSetu",
+  "description": "A real-time pedagogical feedback loop allowing teachers to gauge student understanding instantly via QR codes and AI-powered sentiment analysis.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

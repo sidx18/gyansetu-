@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Gyansetu</string>
+    <string name="title_activity_main">Gyansetu</string>
+    <string name="package_name">com.siddhant.gyansetu</string>
+    <string name="custom_url_scheme">com.siddhant.gyansetu</string>
+</resources>
