@@ -6,6 +6,7 @@ This contains everything you need to run your app locally.
 
 Prerequisites: Node.js
 
+<<<<<<< HEAD
 1. Install dependencies
 npm install
 
@@ -13,3 +14,11 @@ npm install
 
 3. Run the app
 npm run dev
+=======
+1. Install dependencies:
+npm install
+2. Set the GEMINI\_API\_KEY in .env.local to your Gemini API key
+3. Run the app:
+npm run dev
+
+>>>>>>> 428bf1b (Removed banner from README)
