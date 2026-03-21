@@ -13,7 +13,7 @@ export const PulseChart: React.FC<PulseChartProps> = ({ feedbacks }) => {
     { name: '2 (Confused)', value: feedbacks.filter(f => f.rating === 2).length, color: '#f97316' },
     { name: '3 (Getting it)', value: feedbacks.filter(f => f.rating === 3).length, color: '#eab308' },
     { name: '4 (Solid)', value: feedbacks.filter(f => f.rating === 4).length, color: '#84cc16' },
-    { name: '5 (Expert)', value: feedbacks.filter(f => f.rating === 5).length, color: '#ff6f00' },
+    { name: '5 (Expert)', value: feedbacks.filter(f => f.rating === 5).length, color: '#22c55e' },
   ];
 
   return (
