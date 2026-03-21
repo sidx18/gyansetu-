@@ -113,8 +113,20 @@ interface FirestoreErrorInfo {
 
 const handleFirestoreError = (error: any, operationType: OperationType, path: string | null) => {
   // Ignore aborted requests
-  if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted') || error?.code === 20) {
+  if (
+    error?.name === 'AbortError' || 
+    error?.message?.toLowerCase().includes('aborted') || 
+    error?.message?.toLowerCase().includes('user aborted') ||
+    error?.code === 20 ||
+    error?.code === 'aborted'
+  ) {
     console.warn('Firestore operation aborted:', operationType, path);
+    return;
+  }
+
+  // Handle transient network errors silently
+  if (error?.message?.toLowerCase().includes('failed to fetch') || error?.message?.toLowerCase().includes('network error')) {
+    console.warn('Firestore network issue (transient):', operationType, path);
     return;
   }
 
@@ -152,49 +164,49 @@ const createInitialSession = (id?: string, teacherUid?: string): Session => ({
   teacherUid
 });
 
-interface ErrorBoundaryProps {
-  children: ReactNode;
-}
-
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: any;
-}
-
-class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: any) {
     super(props);
     this.state = { hasError: false, error: null };
   }
 
-  static getDerivedStateFromError(error: any): ErrorBoundaryState {
+  static getDerivedStateFromError(error: any) {
     return { hasError: true, error };
   }
 
   componentDidCatch(error: any, errorInfo: any) {
-    console.error("Uncaught error:", error, errorInfo);
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
   }
 
   render() {
     if (this.state.hasError) {
+      let errorMessage = "Something went wrong.";
+      try {
+        const parsed = JSON.parse(this.state.error.message);
+        if (parsed.error) errorMessage = `Firebase Error: ${parsed.error}`;
+      } catch (e) {
+        errorMessage = this.state.error.message || String(this.state.error);
+      }
+
       return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-          <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl border border-rose-100 text-center space-y-6">
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+          <div className="max-w-md w-full bg-white rounded-[2.5rem] p-12 shadow-2xl border border-rose-100 text-center space-y-6">
             <div className="w-20 h-20 bg-rose-50 text-rose-500 rounded-3xl mx-auto flex items-center justify-center">
-              <ShieldAlert className="w-10 h-10" />
+              <AlertTriangle className="w-10 h-10" />
             </div>
             <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none uppercase italic">System Error</h2>
-            <p className="text-slate-500 font-medium">Something went wrong. Please refresh the page or contact support if the issue persists.</p>
-            <div className="p-4 bg-slate-50 rounded-2xl text-left overflow-auto max-h-40">
-              <code className="text-[10px] text-rose-600 font-mono">{JSON.stringify(this.state.error)}</code>
-            </div>
-            <button onClick={() => window.location.reload()} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black flex items-center justify-center gap-2 shadow-xl shadow-slate-200">
+            <p className="text-slate-500 font-medium leading-relaxed">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()} 
+              className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black flex items-center justify-center gap-2 shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all"
+            >
               <RefreshCcw className="w-5 h-5"/> Reload Application
             </button>
           </div>
         </div>
       );
     }
+
     return this.props.children;
   }
 }
@@ -305,7 +317,7 @@ const App: React.FC = () => {
 
   const checkSecurity = useCallback(async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 12000); // Increased timeout to 12s
     try {
       setIpLoading(true);
       setSecurityCheckError(null);
@@ -315,13 +327,19 @@ const App: React.FC = () => {
       setClientIp(ip);
       try {
         const detailController = new AbortController();
-        const detailTimeoutId = setTimeout(() => detailController.abort(), 4000);
+        const detailTimeoutId = setTimeout(() => detailController.abort(), 8000); // Increased timeout to 8s
         const detailResponse = await fetch(`https://ipapi.co/${ip}/json/`, { signal: detailController.signal });
         clearTimeout(detailTimeoutId);
         if (detailResponse.ok) {
           const data = await detailResponse.json();
           setNetworkDetails(data);
-          const suspiciousOrgs = ['Amazon', 'Google Cloud', 'DigitalOcean', 'Linode', 'OVH', 'M247', 'Datacamp', 'Choopa', 'Hosting'];
+          const suspiciousOrgs = [
+            'Amazon', 'Google Cloud', 'DigitalOcean', 'Linode', 'OVH', 'M247', 'Datacamp', 'Choopa', 'Hosting',
+            'Vultr', 'Hetzner', 'Microsoft', 'Azure', 'Oracle', 'Fastly', 'Cloudflare', 'Akamai', 'SoftLayer',
+            'Rackspace', 'Leaseweb', 'Cogent', 'Zscaler', 'NordVPN', 'ExpressVPN', 'Surfshark', 'Private Internet Access',
+            'CyberGhost', 'ProtonVPN', 'TunnelBear', 'Windscribe', 'VyprVPN', 'Mullvad', 'IPVanish', 'StrongVPN',
+            'PureVPN', 'Tor', 'Exit Node', 'Proxy', 'VPN', 'Data Center', 'Server', 'Cloud', 'Infrastructure'
+          ];
           const isSuspiciousOrg = suspiciousOrgs.some(org => 
             (data.org || '').toLowerCase().includes(org.toLowerCase()) || 
             (data.asn || '').toLowerCase().includes(org.toLowerCase())
@@ -329,20 +347,18 @@ const App: React.FC = () => {
           if (isSuspiciousOrg || data.proxy === true || data.vpn === true) {
             setIsVpn(true);
           }
-        } else {
-          setSecurityCheckError('VPN detection service is currently unavailable. Proceeding with standard security.');
         }
       } catch (e) {
-        setSecurityCheckError('Network details check failed. Proceeding with standard security.');
+        // Silent fail for detail check
+        console.warn('Security detail check failed (non-critical)');
       }
     } catch (e: any) {
       if (e.name === 'AbortError' || e.message?.toLowerCase().includes('aborted') || e.code === 20) {
-        setSecurityCheckError('Security check timed out. Proceeding with standard security.');
+        console.warn('Security check timed out. Proceeding with standard security.');
       } else if (e.message?.toLowerCase().includes('failed to fetch')) {
-        setSecurityCheckError('Network connection issue during security check. Proceeding with standard security.');
+        console.warn('Security check network issue (likely adblocker). Proceeding with standard security.');
       } else {
         console.error('Security check failed:', e);
-        setSecurityCheckError('An unexpected error occurred during security check.');
       }
       setIsVpn(false);
     } finally {
@@ -622,6 +638,20 @@ const App: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        const { getDocFromServer, doc } = await import('firebase/firestore');
+        await getDocFromServer(doc(db, 'sessions', 'connection-test'));
+      } catch (error: any) {
+        if (error?.message?.includes('the client is offline')) {
+          console.error("Firebase connection error: The client is offline. Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+  }, []);
+
   const handleLogout = async () => {
     await signOut(auth);
     setViewMode('landing');
@@ -726,7 +756,7 @@ const App: React.FC = () => {
           </div>
           
           <div className="flex items-center gap-3">
-            {user && viewMode === 'teacher-dashboard' && (
+            {user && !isVpn && viewMode === 'teacher-dashboard' && (
               <div className="flex items-center gap-3">
                  <div className="hidden sm:flex flex-col items-end border-r border-slate-200 pr-4">
                     <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Educator</span>
@@ -737,14 +767,19 @@ const App: React.FC = () => {
                  </button>
               </div>
             )}
-            {!user && viewMode !== 'teacher-login' && viewMode !== 'student-form' && (
+            {!user && !isVpn && viewMode !== 'teacher-login' && viewMode !== 'student-form' && (
                <button onClick={() => setViewMode('teacher-login')} className="bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all flex items-center gap-2">
                  <Presentation className="w-4 h-4" /> Educator Portal
                </button>
             )}
-            {viewMode === 'student-form' && (
+            {!isVpn && viewMode === 'student-form' && (
                <div className="px-4 py-1.5 bg-indigo-50 text-indigo-600 rounded-xl border border-indigo-100 flex items-center gap-2 animate-pulse">
                   <Globe className="w-3.5 h-3.5" /> <span className="text-[10px] font-black uppercase tracking-widest">Connected</span>
+               </div>
+            )}
+            {isVpn && (
+               <div className="px-4 py-1.5 bg-rose-50 text-rose-600 rounded-xl border border-rose-100 flex items-center gap-2">
+                  <ShieldAlert className="w-3.5 h-3.5" /> <span className="text-[10px] font-black uppercase tracking-widest">Security Alert</span>
                </div>
             )}
           </div>
@@ -752,7 +787,37 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 w-full max-w-[1440px] mx-auto px-4 md:px-8 py-6 md:py-10">
-        {viewMode === 'landing' && (
+        {isVpn && (
+          <div className="max-w-xl mx-auto py-20 animate-in fade-in slide-in-from-bottom-10 duration-700">
+            <div className="bg-white rounded-[3rem] p-12 shadow-2xl border border-rose-100 text-center space-y-8 relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-rose-500"></div>
+              <div className="w-20 h-20 bg-rose-50 text-rose-500 rounded-3xl mx-auto flex items-center justify-center">
+                <ShieldAlert className="w-10 h-10" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none uppercase italic">Access Denied</h2>
+                <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">Security Protocol 403: Proxy Detected</p>
+              </div>
+              <p className="text-slate-500 font-medium leading-relaxed">
+                GyanSetu requires a direct, unproxied connection for institutional security and to prevent feedback spoofing. 
+                Please disable your VPN, Proxy, or iCloud Private Relay and try again.
+              </p>
+              <div className="pt-4">
+                <button 
+                  onClick={() => window.location.reload()} 
+                  className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black flex items-center justify-center gap-2 shadow-xl shadow-slate-200 hover:bg-slate-800 transition-all"
+                >
+                  <RefreshCcw className="w-5 h-5"/> Re-Authenticate Connection
+                </button>
+              </div>
+              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest pt-4 border-t border-slate-50">
+                Network: {networkDetails?.org || 'Unknown Infrastructure'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isVpn && viewMode === 'landing' && (
           <div className="max-w-6xl mx-auto py-12 md:py-20 flex flex-col items-center text-center">
              <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 border border-indigo-100 rounded-full text-indigo-600 font-bold text-xs uppercase tracking-widest mb-8 animate-float">
                <Sparkles className="w-3.5 h-3.5" /> Built for Modern Pedagogy
@@ -782,7 +847,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {viewMode === 'teacher-login' && (
+        {!isVpn && viewMode === 'teacher-login' && (
           <div className="max-w-md mx-auto py-12 animate-in fade-in slide-in-from-bottom-10 duration-700">
             <div className="bg-white rounded-[3rem] p-10 md:p-14 shadow-2xl border border-slate-100 flex flex-col">
                <div className="text-center mb-10">
@@ -804,7 +869,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {viewMode === 'teacher-dashboard' && user && (
+        {!isVpn && viewMode === 'teacher-dashboard' && user && (
           <div className="space-y-8 animate-in fade-in duration-500">
             {/* Real-time Status Bar */}
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -884,12 +949,12 @@ const App: React.FC = () => {
                            <button 
                              onClick={() => setConfirmAction({
                                type: 'clear',
-                               title: 'Clear History',
-                               message: 'Are you sure you want to clear all student feedback and history? Session metadata will remain.'
+                               title: 'Clear Interaction History',
+                               message: 'Are you sure you want to clear all feedback, slow down events, and silent requests? Session metadata will be preserved.'
                              })} 
                              className="bg-rose-50 text-rose-600 py-4 rounded-2xl font-black text-[9px] uppercase tracking-widest border border-rose-100 hover:bg-rose-100 transition-all flex items-center justify-center gap-2"
                            >
-                             <Eraser className="w-4 h-4" /> Clear Session History
+                             <Eraser className="w-4 h-4" /> Clear Interaction History
                            </button>
                            <button 
                              onClick={() => setConfirmAction({
@@ -1237,7 +1302,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {viewMode === 'teacher-reports' && user && (
+        {!isVpn && viewMode === 'teacher-reports' && user && (
           <div className="space-y-8 animate-in fade-in duration-500">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
@@ -1293,7 +1358,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {viewMode === 'student-form' && (
+        {!isVpn && viewMode === 'student-form' && (
           <div className="max-w-xl mx-auto space-y-8 pb-20 animate-in fade-in slide-in-from-bottom-10 duration-700">
              {ipLoading ? (
                <div className="text-center py-20 flex flex-col items-center gap-6">
@@ -1302,14 +1367,6 @@ const App: React.FC = () => {
                    <Loader2 className="w-16 h-16 animate-spin text-indigo-600 relative z-10" />
                  </div>
                  <p className="text-xl font-black text-slate-400 tracking-tighter uppercase italic">Securing Tunnel...</p>
-               </div>
-             ) : isVpn ? (
-               <div className="bg-white rounded-[3rem] p-12 shadow-2xl border border-rose-100 text-center space-y-8 relative overflow-hidden">
-                  <div className="absolute top-0 left-0 w-full h-2 bg-rose-500"></div>
-                  <div className="w-20 h-20 bg-rose-50 text-rose-500 rounded-3xl mx-auto flex items-center justify-center"><ShieldAlert className="w-10 h-10" /></div>
-                  <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none uppercase italic">Access Denied</h2>
-                  <p className="text-slate-500 font-medium">GyanSetu requires a direct, unproxied connection for institutional security. Disable VPN and retry.</p>
-                  <button onClick={() => window.location.reload()} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black flex items-center justify-center gap-2 shadow-xl shadow-slate-200"><RefreshCcw className="w-5 h-5"/> Re-Authenticate</button>
                </div>
              ) : (
                <div className="flex flex-col gap-8">
