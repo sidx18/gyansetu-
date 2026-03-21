@@ -45,14 +45,18 @@ import {
   Copy,
   ExternalLink,
   ChevronRight,
-  LogIn
+  LogIn,
+  FileText,
+  TrendingUp,
+  MessageSquare,
 } from 'lucide-react';
-import { Feedback, Session, ViewMode, AIInsights, SlowDownEvent, Answer, SilentRequest, RequestType, RequestStatus } from './types';
+import { Feedback, Session, ViewMode, AIInsights, SlowDownEvent, Answer, SilentRequest, RequestType, RequestStatus, SessionReport } from './types';
 import { analyzeClassroomPulse } from './services/geminiService';
 import { PulseChart } from './components/PulseChart';
 import { QRCodeComponent } from './components/QRCodeComponent';
 import { filterContent, isSpam } from './utils/moderation';
 import { SentimentMeter } from './components/SentimentMeter';
+import { SessionReportView } from './components/SessionReportView';
 import { db, auth } from './firebase';
 import { 
   doc, 
@@ -61,6 +65,7 @@ import {
   collection, 
   query, 
   orderBy, 
+  where,
   addDoc, 
   updateDoc, 
   deleteDoc, 
@@ -106,7 +111,13 @@ interface FirestoreErrorInfo {
   }
 }
 
-const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+const handleFirestoreError = (error: any, operationType: OperationType, path: string | null) => {
+  // Ignore aborted requests
+  if (error?.name === 'AbortError' || error?.message?.toLowerCase().includes('aborted') || error?.code === 20) {
+    console.warn('Firestore operation aborted:', operationType, path);
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -129,7 +140,7 @@ const handleFirestoreError = (error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 };
 
-const createInitialSession = (id?: string): Session => ({
+const createInitialSession = (id?: string, teacherUid?: string): Session => ({
   id: id || `gs-${Math.floor(1000 + Math.random() * 9000)}`,
   className: 'Advanced Pedagogy 101',
   topic: 'Real-time Interaction Loops',
@@ -137,7 +148,8 @@ const createInitialSession = (id?: string): Session => ({
   feedbacks: [],
   slowDownEvents: [],
   silentRequests: [],
-  estimatedStudentCount: 30 
+  estimatedStudentCount: 30,
+  teacherUid
 });
 
 interface ErrorBoundaryProps {
@@ -200,6 +212,7 @@ const App: React.FC = () => {
   const [submitted, setSubmitted] = useState(false);
   const [clientIp, setClientIp] = useState<string | undefined>();
   const [isVpn, setIsVpn] = useState<boolean>(false);
+  const [networkDetails, setNetworkDetails] = useState<any>(null);
   const [ipLoading, setIpLoading] = useState<boolean>(true);
   const [lastSlowDownAt, setLastSlowDownAt] = useState<number>(0);
 
@@ -213,6 +226,8 @@ const App: React.FC = () => {
   const [confirmAction, setConfirmAction] = useState<{ type: 'clear' | 'new' | 'reset', title: string, message: string } | null>(null);
   const [tempClassSize, setTempClassSize] = useState(session.estimatedStudentCount);
   const [visibleIps, setVisibleIps] = useState<Set<string>>(new Set());
+  const [reports, setReports] = useState<SessionReport[]>([]);
+  const [selectedReport, setSelectedReport] = useState<SessionReport | null>(null);
 
   const [studentRating, setStudentRating] = useState<number>(0);
   const [studentQuestion, setStudentQuestion] = useState('');
@@ -240,13 +255,14 @@ const App: React.FC = () => {
         setSession(prev => ({ ...prev, ...data, id: urlSessionId }));
       } else if (user && (user.email === 'siddhant198u@gmail.com' || user.email === 'friendmemories1112@gmail.com')) {
         // If teacher is logged in and session doesn't exist, create it
-        const newSess = createInitialSession(urlSessionId);
+        const newSess = createInitialSession(urlSessionId, user.uid);
         setDoc(doc(db, 'sessions', urlSessionId), {
           id: newSess.id,
           className: newSess.className,
           topic: newSess.topic,
           createdAt: newSess.createdAt,
-          estimatedStudentCount: newSess.estimatedStudentCount
+          estimatedStudentCount: newSess.estimatedStudentCount,
+          teacherUid: user.uid
         }).catch(e => handleFirestoreError(e, OperationType.WRITE, `sessions/${urlSessionId}`));
       }
     }, (e) => handleFirestoreError(e, OperationType.GET, `sessions/${urlSessionId}`));
@@ -269,11 +285,21 @@ const App: React.FC = () => {
       setSession(prev => ({ ...prev, silentRequests }));
     }, (e) => handleFirestoreError(e, OperationType.GET, `sessions/${urlSessionId}/silentRequests`));
 
+    // Sync Reports
+    let unsubReports = () => {};
+    if (user) {
+      unsubReports = onSnapshot(query(collection(db, 'reports'), where('teacherUid', '==', user.uid), orderBy('timestamp', 'desc')), (snap) => {
+        const reports = snap.docs.map(d => d.data() as SessionReport);
+        setReports(reports);
+      }, (e) => handleFirestoreError(e, OperationType.GET, `reports`));
+    }
+
     return () => {
       unsubSession();
       unsubFeedbacks();
       unsubSlowDown();
       unsubRequests();
+      unsubReports();
     };
   }, [session.id, user]);
 
@@ -294,6 +320,7 @@ const App: React.FC = () => {
         clearTimeout(detailTimeoutId);
         if (detailResponse.ok) {
           const data = await detailResponse.json();
+          setNetworkDetails(data);
           const suspiciousOrgs = ['Amazon', 'Google Cloud', 'DigitalOcean', 'Linode', 'OVH', 'M247', 'Datacamp', 'Choopa', 'Hosting'];
           const isSuspiciousOrg = suspiciousOrgs.some(org => 
             (data.org || '').toLowerCase().includes(org.toLowerCase()) || 
@@ -309,9 +336,9 @@ const App: React.FC = () => {
         setSecurityCheckError('Network details check failed. Proceeding with standard security.');
       }
     } catch (e: any) {
-      if (e.name === 'AbortError' || e.message?.includes('aborted')) {
+      if (e.name === 'AbortError' || e.message?.toLowerCase().includes('aborted') || e.code === 20) {
         setSecurityCheckError('Security check timed out. Proceeding with standard security.');
-      } else if (e.message?.includes('Failed to fetch')) {
+      } else if (e.message?.toLowerCase().includes('failed to fetch')) {
         setSecurityCheckError('Network connection issue during security check. Proceeding with standard security.');
       } else {
         console.error('Security check failed:', e);
@@ -370,6 +397,38 @@ const App: React.FC = () => {
     }
   };
 
+  const handleSaveReport = async () => {
+    if (!user || !insights) return;
+    
+    const avgRating = session.feedbacks.length > 0 
+      ? parseFloat((session.feedbacks.reduce((acc, f) => acc + f.rating, 0) / session.feedbacks.length).toFixed(1))
+      : 0;
+
+    const report: Omit<SessionReport, 'id'> = {
+      sessionId: session.id,
+      teacherUid: user.uid,
+      className: session.className,
+      topic: session.topic,
+      timestamp: Date.now(),
+      summary: insights.summary,
+      actionPlan: insights.actionPlan,
+      averageRating: avgRating,
+      totalFeedbacks: session.feedbacks.length,
+      totalSlowDowns: session.slowDownEvents.length,
+      totalRequests: session.silentRequests.length,
+      confusionPoints: insights.confusionPoints,
+      keywords: insights.keywords || []
+    };
+
+    try {
+      const docRef = await addDoc(collection(db, 'reports'), report);
+      await updateDoc(docRef, { id: docRef.id });
+      alert('Session report archived successfully.');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, 'reports');
+    }
+  };
+
   const handleUpdateClassSize = async () => {
     try {
       await updateDoc(doc(db, 'sessions', session.id), {
@@ -405,13 +464,14 @@ const App: React.FC = () => {
 
   const handleNewSession = async () => {
     try {
-      const newSess = createInitialSession();
+      const newSess = createInitialSession(undefined, user?.uid);
       await setDoc(doc(db, 'sessions', newSess.id), {
         id: newSess.id,
         className: newSess.className,
         topic: newSess.topic,
         createdAt: newSess.createdAt,
-        estimatedStudentCount: newSess.estimatedStudentCount
+        estimatedStudentCount: newSess.estimatedStudentCount,
+        teacherUid: user?.uid
       });
       setSession(newSess);
       setInsights(null);
@@ -431,7 +491,7 @@ const App: React.FC = () => {
     try {
       await handleClearHistory();
       await deleteDoc(doc(db, 'sessions', session.id));
-      const newSess = createInitialSession();
+      const newSess = createInitialSession(undefined, user?.uid);
       setSession(newSess);
       setInsights(null);
       setShowSettings(false);
@@ -747,7 +807,7 @@ const App: React.FC = () => {
         {viewMode === 'teacher-dashboard' && user && (
           <div className="space-y-8 animate-in fade-in duration-500">
             {/* Real-time Status Bar */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="md:col-span-3 glass border border-slate-200/60 p-5 rounded-3xl flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className="bg-indigo-600 text-white p-3 rounded-2xl shadow-lg shadow-indigo-200">
@@ -776,6 +836,18 @@ const App: React.FC = () => {
                     <span className="text-sm font-black text-slate-800">Settings</span>
                  </div>
               </div>
+              <button 
+                onClick={() => setViewMode('teacher-reports')} 
+                className="glass border border-indigo-200/60 p-5 rounded-3xl bg-indigo-50/30 flex items-center justify-center gap-4 group cursor-pointer hover:bg-indigo-50 transition-colors"
+              >
+                 <div className="p-3 rounded-2xl bg-white text-indigo-600 shadow-sm border border-indigo-100">
+                   <FileText className="w-5 h-5" />
+                 </div>
+                 <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Archives</span>
+                    <span className="text-sm font-black text-slate-800">Reports</span>
+                 </div>
+              </button>
             </div>
 
             {showSettings && (
@@ -789,7 +861,7 @@ const App: React.FC = () => {
                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Target Class Size</label>
                        <div className="flex items-center gap-3">
                          <input type="number" value={tempClassSize} onChange={(e) => setTempClassSize(parseInt(e.target.value) || 1)} className="flex-1 p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-black text-xl" />
-                         <button onClick={handleUpdateClassSize} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-sm uppercase">Update</button>
+                         <button onClick={handleUpdateClassSize} className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-sm uppercase">Update Class Size</button>
                        </div>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -817,7 +889,7 @@ const App: React.FC = () => {
                              })} 
                              className="bg-rose-50 text-rose-600 py-4 rounded-2xl font-black text-[9px] uppercase tracking-widest border border-rose-100 hover:bg-rose-100 transition-all flex items-center justify-center gap-2"
                            >
-                             <Eraser className="w-4 h-4" /> Clear
+                             <Eraser className="w-4 h-4" /> Clear Session History
                            </button>
                            <button 
                              onClick={() => setConfirmAction({
@@ -870,6 +942,50 @@ const App: React.FC = () => {
                 <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200/60 flex flex-col">
                   <div className="flex items-center justify-between mb-8">
                     <div className="flex items-center gap-3">
+                      <div className="bg-slate-100 p-2.5 rounded-xl text-slate-600"><Activity className="w-5 h-5" /></div>
+                      <h3 className="text-lg font-black text-slate-900 tracking-tight">Recent Pulse Feed</h3>
+                    </div>
+                  </div>
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                    {session.feedbacks.length === 0 ? (
+                      <div className="py-10 opacity-30 text-center flex flex-col items-center gap-4">
+                        <Activity className="w-8 h-8" />
+                        <p className="font-black text-[10px] uppercase tracking-widest">No pulse data yet</p>
+                      </div>
+                    ) : (
+                      [...session.feedbacks].sort((a, b) => b.timestamp - a.timestamp).slice(0, 50).map(f => (
+                        <div key={f.id} className="flex items-center justify-between p-4 bg-slate-50/50 border border-slate-100 rounded-2xl">
+                          <div className="flex items-center gap-4">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-white shadow-sm ${
+                              f.rating === 1 ? 'bg-rose-500' :
+                              f.rating === 2 ? 'bg-orange-500' :
+                              f.rating === 3 ? 'bg-amber-500' :
+                              f.rating === 4 ? 'bg-lime-500' :
+                              'bg-emerald-500'
+                            }`}>
+                              {f.rating}
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-black text-slate-800 uppercase tracking-widest">
+                                {f.rating === 1 ? 'Lost' :
+                                 f.rating === 2 ? 'Confused' :
+                                 f.rating === 3 ? 'Getting it' :
+                                 f.rating === 4 ? 'Solid' :
+                                 'Expert'}
+                              </span>
+                              {f.studentIp && <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest">{f.studentIp}</span>}
+                            </div>
+                          </div>
+                          <span className="text-[8px] font-bold text-slate-400">{new Date(f.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200/60 flex flex-col">
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
                       <div className="bg-slate-100 p-2.5 rounded-xl text-slate-600"><MessageCircle className="w-5 h-5" /></div>
                       <h3 className="text-lg font-black text-slate-900 tracking-tight">Student Questions & Peer Aid</h3>
                     </div>
@@ -885,14 +1001,20 @@ const App: React.FC = () => {
                         <div key={f.id} className="p-6 bg-slate-50/50 border-2 border-slate-100 rounded-[2rem] text-left space-y-4">
                           <div className="flex justify-between items-start">
                             <p className="font-bold text-slate-800">"{f.question}"</p>
-                            <span className="text-[10px] font-bold text-slate-400">{new Date(f.timestamp).toLocaleTimeString()}</span>
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="text-[10px] font-bold text-slate-400">{new Date(f.timestamp).toLocaleTimeString()}</span>
+                              {f.studentIp && <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest">{f.studentIp}</span>}
+                            </div>
                           </div>
                           <div className="space-y-3 pl-4 border-l-2 border-indigo-200">
                             {f.answers.map(a => (
                               <div key={a.id} className={`p-3 rounded-xl text-xs flex items-center justify-between gap-2 ${a.isVerified ? 'bg-emerald-50 text-emerald-800 font-bold border border-emerald-100' : 'bg-white border border-slate-200'}`}>
-                                <div className="flex items-start gap-2">
-                                  {a.isVerified && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
-                                  <p>{a.text}</p>
+                                <div className="flex flex-col gap-1 flex-1">
+                                  <div className="flex items-start gap-2">
+                                    {a.isVerified && <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                                    <p>{a.text}</p>
+                                  </div>
+                                  {a.studentIp && <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest ml-5.5">{a.studentIp}</span>}
                                 </div>
                                 <button 
                                   onClick={() => verifyAnswer(f.id, a.id)}
@@ -1041,7 +1163,10 @@ const App: React.FC = () => {
                           <div className="flex items-center justify-between mb-3">
                              <div className="flex items-center gap-2">
                                 <div className="bg-slate-100 p-2 rounded-lg text-slate-600">{getRequestIcon(r.type)}</div>
-                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-800">{r.type.replace('-', ' ')}</span>
+                                <div className="flex flex-col">
+                                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-800">{r.type.replace('-', ' ')}</span>
+                                  {r.studentIp && <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest">{r.studentIp}</span>}
+                                </div>
                              </div>
                              <span className="text-[8px] font-bold text-slate-400">{new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                           </div>
@@ -1112,6 +1237,62 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {viewMode === 'teacher-reports' && user && (
+          <div className="space-y-8 animate-in fade-in duration-500">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <button onClick={() => {setViewMode('teacher-dashboard'); setSelectedReport(null);}} className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-50 transition-all">
+                  <ChevronRight className="w-5 h-5 rotate-180" />
+                </button>
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight leading-none uppercase italic">Session Archives</h2>
+              </div>
+              <button 
+                onClick={handleSaveReport} 
+                disabled={session.feedbacks.length === 0 || !insights} 
+                className="bg-indigo-600 text-white px-6 py-4 rounded-2xl font-black text-sm uppercase flex items-center gap-2 disabled:opacity-30 shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+              >
+                <Sparkles className="w-4 h-4" /> Archive Current Session
+              </button>
+            </div>
+
+            {selectedReport ? (
+              <SessionReportView report={selectedReport} onClose={() => setSelectedReport(null)} />
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {reports.length === 0 ? (
+                  <div className="col-span-full py-20 text-center opacity-30 flex flex-col items-center gap-4">
+                    <FileText className="w-16 h-16 text-slate-400" />
+                    <p className="font-black text-lg uppercase tracking-widest">No archived reports found</p>
+                  </div>
+                ) : (
+                  reports.map(report => (
+                    <div key={report.id} onClick={() => setSelectedReport(report)} className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm hover:shadow-xl hover:border-indigo-200 transition-all cursor-pointer group flex flex-col h-full">
+                      <div className="flex items-center justify-between mb-6">
+                        <div className="bg-indigo-50 text-indigo-600 p-3 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(report.timestamp).toLocaleDateString()}</span>
+                      </div>
+                      <h3 className="text-xl font-black text-slate-900 tracking-tight mb-2 group-hover:text-indigo-600 transition-colors">{report.topic}</h3>
+                      <p className="text-slate-500 text-sm font-medium line-clamp-2 mb-6 flex-1">{report.summary}</p>
+                      <div className="flex items-center justify-between pt-6 border-t border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4 text-emerald-500" />
+                          <span className="text-xs font-black text-slate-900">{report.averageRating} Pulse</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="w-4 h-4 text-indigo-500" />
+                          <span className="text-xs font-black text-slate-900">{report.totalFeedbacks}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {viewMode === 'student-form' && (
           <div className="max-w-xl mx-auto space-y-8 pb-20 animate-in fade-in slide-in-from-bottom-10 duration-700">
              {ipLoading ? (
@@ -1132,6 +1313,28 @@ const App: React.FC = () => {
                </div>
              ) : (
                <div className="flex flex-col gap-8">
+                 {/* Network Status Badge */}
+                 <div className="flex items-center justify-between px-6 py-3 bg-slate-50 border border-slate-200/60 rounded-2xl text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                   <div className="flex items-center gap-4">
+                     <div className="flex items-center gap-2">
+                       <Globe className="w-3 h-3 text-indigo-500" />
+                       <span>IP: {clientIp || 'Detecting...'}</span>
+                     </div>
+                     {networkDetails && (
+                       <button 
+                         onClick={() => alert(`Network Diagnostics:\nIP: ${clientIp}\nCity: ${networkDetails.city}\nRegion: ${networkDetails.region}\nOrg: ${networkDetails.org}\nASN: ${networkDetails.asn}`)}
+                         className="text-indigo-400 hover:text-indigo-600 underline decoration-dotted underline-offset-2"
+                       >
+                         Details
+                       </button>
+                     )}
+                   </div>
+                   <div className="flex items-center gap-2">
+                     <ShieldCheck className="w-3 h-3 text-emerald-500" />
+                     <span>Secure Connection</span>
+                   </div>
+                 </div>
+
                  <div className="flex bg-white p-2 rounded-[2rem] border border-slate-200/60 premium-shadow">
                     {[
                       { id: null, label: 'Pulse', icon: <Megaphone className="w-4 h-4" /> },
@@ -1271,7 +1474,6 @@ const App: React.FC = () => {
               <div className="bg-indigo-600 p-1.5 rounded-lg"><GraduationCap className="w-4 h-4 text-white" /></div>
               <span className="text-lg font-black text-slate-900 tracking-tighter">GyanSetu</span>
            </div>
-           <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.4em]">© 2024 Pedagogical Labs</p>
         </div>
       </footer>
     </div>
