@@ -207,6 +207,7 @@ const App: React.FC = () => {
   const [lastAnswerAt, setLastAnswerAt] = useState<number>(0);
   const [cooldownSeconds, setCooldownSeconds] = useState<number>(0);
   const [moderationWarning, setModerationWarning] = useState<string | null>(null);
+  const [securityCheckError, setSecurityCheckError] = useState<string | null>(null);
   
   const [showSettings, setShowSettings] = useState(false);
   const [confirmAction, setConfirmAction] = useState<{ type: 'clear' | 'new' | 'reset', title: string, message: string } | null>(null);
@@ -237,7 +238,7 @@ const App: React.FC = () => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setSession(prev => ({ ...prev, ...data, id: urlSessionId }));
-      } else if (user) {
+      } else if (user && (user.email === 'siddhant198u@gmail.com' || user.email === 'friendmemories1112@gmail.com')) {
         // If teacher is logged in and session doesn't exist, create it
         const newSess = createInitialSession(urlSessionId);
         setDoc(doc(db, 'sessions', urlSessionId), {
@@ -281,12 +282,16 @@ const App: React.FC = () => {
     const timeoutId = setTimeout(() => controller.abort(), 6000);
     try {
       setIpLoading(true);
+      setSecurityCheckError(null);
       const ipResponse = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
       if (!ipResponse.ok) throw new Error('IP fetch failed');
       const { ip } = await ipResponse.json();
       setClientIp(ip);
       try {
-        const detailResponse = await fetch(`https://ipapi.co/${ip}/json/`);
+        const detailController = new AbortController();
+        const detailTimeoutId = setTimeout(() => detailController.abort(), 4000);
+        const detailResponse = await fetch(`https://ipapi.co/${ip}/json/`, { signal: detailController.signal });
+        clearTimeout(detailTimeoutId);
         if (detailResponse.ok) {
           const data = await detailResponse.json();
           const suspiciousOrgs = ['Amazon', 'Google Cloud', 'DigitalOcean', 'Linode', 'OVH', 'M247', 'Datacamp', 'Choopa', 'Hosting'];
@@ -297,15 +302,20 @@ const App: React.FC = () => {
           if (isSuspiciousOrg || data.proxy === true || data.vpn === true) {
             setIsVpn(true);
           }
+        } else {
+          setSecurityCheckError('VPN detection service is currently unavailable. Proceeding with standard security.');
         }
       } catch (e) {
-        // Silently fail detail check
+        setSecurityCheckError('Network details check failed. Proceeding with standard security.');
       }
     } catch (e: any) {
-      if (e.name === 'AbortError' || e.message?.includes('aborted') || e.message?.includes('Failed to fetch')) {
-        // Handle timeout and network failures silently
+      if (e.name === 'AbortError' || e.message?.includes('aborted')) {
+        setSecurityCheckError('Security check timed out. Proceeding with standard security.');
+      } else if (e.message?.includes('Failed to fetch')) {
+        setSecurityCheckError('Network connection issue during security check. Proceeding with standard security.');
       } else {
         console.error('Security check failed:', e);
+        setSecurityCheckError('An unexpected error occurred during security check.');
       }
       setIsVpn(false);
     } finally {
@@ -337,9 +347,16 @@ const App: React.FC = () => {
   const fetchAIInsights = useCallback(async () => {
     if (session.feedbacks.length === 0) return;
     setIsAnalyzing(true);
-    const result = await analyzeClassroomPulse(session.feedbacks);
-    setInsights(result);
-    setIsAnalyzing(false);
+    try {
+      const result = await analyzeClassroomPulse(session.feedbacks);
+      setInsights(result);
+    } catch (error) {
+      console.error("AI analysis failed:", error);
+      // analyzeClassroomPulse already returns a fallback object on error, 
+      // but this catch handles any errors that might occur before or during the call.
+    } finally {
+      setIsAnalyzing(false);
+    }
   }, [session.feedbacks]);
 
   const handleTeacherLogin = async () => {
@@ -586,6 +603,23 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
+      {/* Security Check Error Notification */}
+      {securityCheckError && (
+        <div className="fixed bottom-6 right-6 z-[90] animate-in slide-in-from-right-6 duration-500">
+          <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl shadow-xl flex items-center gap-4 max-w-sm">
+            <div className="bg-amber-500 text-white p-2 rounded-xl">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-bold text-amber-900 leading-tight">{securityCheckError}</p>
+            </div>
+            <button onClick={() => setSecurityCheckError(null)} className="text-amber-400 hover:text-amber-600">
+              <XCircle className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Confirmation Modal */}
       {confirmAction && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-300">
@@ -1246,4 +1280,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
