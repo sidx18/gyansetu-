@@ -1,0 +1,145 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: sessions
+    // Document ID: sessionId
+    // Fields:
+    //   - id: string (required)
+    //   - className: string (required)
+    //   - topic: string (required)
+    //   - createdAt: number (required)
+    //   - estimatedStudentCount: number (optional)
+    //   - teacherUid: string (required)
+    //
+    // Subcollection: feedbacks
+    // Document ID: feedbackId
+    // Fields:
+    //   - id: string (required)
+    //   - rating: number (required)
+    //   - question: string (optional)
+    //   - timestamp: number (required)
+    //   - studentIp: string (optional)
+    //   - answers: array of objects (optional)
+    //
+    // Subcollection: slowDownEvents
+    // Document ID: eventId
+    // Fields:
+    //   - id: string (required)
+    //   - timestamp: number (required)
+    //   - studentIp: string (optional)
+    //
+    // Subcollection: silentRequests
+    // Document ID: requestId
+    // Fields:
+    //   - id: string (required)
+    //   - type: string (required, enum: bathroom, urgent-question, hand-raise, after-class)
+    //   - status: string (required, enum: pending, approved, wait, dismissed)
+    //   - timestamp: number (required)
+    //   - studentIp: string (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((request.auth.token.email.lower() == "siddhant198u@gmail.com" || request.auth.token.email.lower() == "friendmemories1112@gmail.com") && request.auth.token.email_verified == true);
+    }
+
+    function isValidSession(data) {
+      return data.id is string && data.id.size() > 0 &&
+             data.className is string && data.className.size() > 0 &&
+             data.topic is string && data.topic.size() > 0 &&
+             data.createdAt is number &&
+             data.teacherUid is string && data.teacherUid == request.auth.uid;
+    }
+
+    function isValidFeedback(data) {
+      return data.id is string &&
+             data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+             data.timestamp is number &&
+             (!('question' in data) || (data.question is string && data.question.size() < 1000)) &&
+             (!('studentIp' in data) || (data.studentIp is string && data.studentIp.size() < 50)) &&
+             (!('answers' in data) || (data.answers is list && data.answers.size() < 100));
+    }
+
+    function isValidSlowDown(data) {
+      return data.id is string && data.timestamp is number &&
+             (!('studentIp' in data) || (data.studentIp is string && data.studentIp.size() < 50));
+    }
+
+    function isValidSilentRequest(data) {
+      return data.id is string &&
+             data.type in ['bathroom', 'urgent-question', 'hand-raise', 'after-class'] &&
+             data.status in ['pending', 'approved', 'wait', 'dismissed'] &&
+             data.timestamp is number &&
+             (!('studentIp' in data) || (data.studentIp is string && data.studentIp.size() < 50));
+    }
+
+    function isOnlyAddingAnswer() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers']) &&
+             request.resource.data.answers.size() == resource.data.answers.size() + 1;
+    }
+
+    function isOnlyDismissingRequest() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+             request.resource.data.status == 'dismissed';
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /sessions/{sessionId} {
+      // Anyone with the sessionId can read the session metadata
+      allow read: if true;
+      
+      // Only authenticated admins (teachers) can create or update sessions
+      allow create: if isAdmin() && isValidSession(request.resource.data);
+      allow update: if isAdmin() && isValidSession(request.resource.data);
+      
+      match /feedbacks/{feedbackId} {
+        // Students can read feedbacks to see Peer Aid, but we should be careful about PII
+        // In a real app, we'd split the IP into a separate collection
+        allow read: if true;
+        // Anyone can submit feedback
+        allow create: if isValidFeedback(request.resource.data);
+        // Admin can update anything, students can only add answers
+        allow update: if (isAdmin() && isValidFeedback(request.resource.data)) || 
+                       (isOnlyAddingAnswer() && isValidFeedback(request.resource.data));
+      }
+
+      match /slowDownEvents/{eventId} {
+        allow read: if true;
+        // Anyone can request to slow down
+        allow create: if isValidSlowDown(request.resource.data);
+      }
+
+      match /silentRequests/{requestId} {
+        allow read: if true;
+        // Anyone can create a silent request
+        allow create: if isValidSilentRequest(request.resource.data);
+        // Admin can update status, students can only dismiss their own (simplified to any dismissal)
+        allow update: if (isAdmin() && isValidSilentRequest(request.resource.data)) || 
+                       (isOnlyDismissingRequest() && isValidSilentRequest(request.resource.data));
+      }
+    }
+
+    match /reports/{reportId} {
+      // Only the teacher can read their own reports
+      allow read: if isAuthenticated() && resource.data.teacherUid == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.teacherUid == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.teacherUid == request.auth.uid;
+    }
+  }
+}
