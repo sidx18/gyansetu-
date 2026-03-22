@@ -21,4 +21,4 @@ npm install
 3. Run the app:
 npm run dev
 
->>>>>>> 428bf1b (Removed banner from README)
+>>>>>>> 428bf1b
