@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "314563264135",
+    "project_id": "gyansetu-38475",
+    "storage_bucket": "gyansetu-38475.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:314563264135:android:81385ab62e29cb0758c222",
+        "android_client_info": {
+          "package_name": "com.gyansetu.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "314563264135-j6honju2nusmgj5c1f80bcebm92fgnc3.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gyansetu.app",
+            "certificate_hash": "b4bc965907cca7e379db450abb1f6880f7371814"
+          }
+        },
+        {
+          "client_id": "314563264135-37glr5psqevl7mp9f7v54a3tlp0u5t6a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDpxZyR4oPy12iisVJGjQVrReDIsNcrduA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "314563264135-37glr5psqevl7mp9f7v54a3tlp0u5t6a.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

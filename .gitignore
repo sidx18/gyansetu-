@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+.env.local
+.firebase
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+android/keystore.properties
+android/app/*.jks
+android/app/*.keystore
+
+.vercel

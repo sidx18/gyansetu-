@@ -1,0 +1,152 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function hasUserDoc(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function currentRole() {
+      return hasUserDoc(request.auth.uid) ? userDoc(request.auth.uid).data.role : null;
+    }
+
+    function isTeacher() {
+      return signedIn() && currentRole() == "teacher";
+    }
+
+    function validRole(role) {
+      return role == "teacher" || role == "student";
+    }
+
+    function shortString(value, max) {
+      return value is string && value.size() > 0 && value.size() <= max;
+    }
+
+    function optionalShortString(value, max) {
+      return !(value is string) || value.size() <= max;
+    }
+
+    function validHttpUrl(value) {
+      return value is string
+        && value.size() <= 320
+        && (value.matches('^https://.*') || value.matches('^http://.*'));
+    }
+
+    match /users/{uid} {
+      allow create: if isOwner(uid)
+        && validRole(request.resource.data.role)
+        && shortString(request.resource.data.name, 80)
+        && shortString(request.resource.data.email, 160);
+
+      allow read, update: if isOwner(uid)
+        && validRole(request.resource.data.role)
+        && shortString(request.resource.data.name, 80)
+        && shortString(request.resource.data.email, 160);
+
+      allow delete: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if signedIn();
+
+      allow create, update: if isTeacher()
+        && shortString(request.resource.data.title, 120)
+        && shortString(request.resource.data.courseLabel, 80)
+        && shortString(request.resource.data.sessionCode, 24)
+        && shortString(request.resource.data.currentComprehension, 240)
+        && shortString(request.resource.data.moderationLabel, 40)
+        && shortString(request.resource.data.moderationDetail, 160)
+        && validHttpUrl(request.resource.data.joinUrl);
+
+      allow delete: if false;
+
+      match /questions/{questionId} {
+        allow read: if signedIn();
+
+        allow create: if signedIn()
+          && shortString(request.resource.data.author, 80)
+          && shortString(request.resource.data.topic, 80)
+          && shortString(request.resource.data.text, 500)
+          && request.resource.data.status == "open"
+          && request.resource.data.votes == 0
+          && request.resource.data.verified == false
+          && (!("authorId" in request.resource.data) || request.resource.data.authorId == request.auth.uid);
+
+        allow update: if isTeacher();
+        allow delete: if false;
+      }
+
+      match /requests/{requestId} {
+        allow read: if signedIn();
+
+        allow create: if signedIn()
+          && shortString(request.resource.data.student, 80)
+          && shortString(request.resource.data.note, 240)
+          && (
+            request.resource.data.type == "bathroom"
+            || request.resource.data.type == "urgent question"
+            || request.resource.data.type == "hand raise"
+          )
+          && request.resource.data.status == "pending";
+
+        allow update: if isTeacher();
+        allow delete: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if signedIn();
+
+        allow create: if (
+            isTeacher()
+            && shortString(request.resource.data.title, 120)
+            && shortString(request.resource.data.body, 320)
+          ) || (
+            signedIn()
+            && currentRole() == "student"
+            && request.resource.data.audience == "teacher"
+            && (request.resource.data.kind == "question" || request.resource.data.kind == "request")
+            && shortString(request.resource.data.title, 120)
+            && shortString(request.resource.data.body, 320)
+          );
+
+        allow update, delete: if false;
+      }
+
+      match /archives/{archiveId} {
+        allow read: if signedIn();
+        allow create, update: if isTeacher();
+        allow delete: if false;
+      }
+
+      match /pulseHistory/{docId} {
+        allow read: if signedIn();
+        allow create, update: if isTeacher();
+        allow delete: if false;
+      }
+
+      match /studentSignals/{docId} {
+        allow read: if signedIn();
+        allow create, update: if signedIn();
+        allow delete: if false;
+      }
+
+      match /slowdownSignals/{docId} {
+        allow read: if signedIn();
+        allow create, update: if signedIn();
+        allow delete: if false;
+      }
+    }
+  }
+}
